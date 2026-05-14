@@ -31,7 +31,7 @@ st.markdown("### Pediatric Vancomycin Precision Dosing")
 # --- 1. SIDEBAR DATA MANAGEMENT ---
 with st.sidebar:
     st.sidebar.title("VancyDoodle")
-    st.sidebar.caption("Precision Vancomycin Dosing v1.0")
+    st.sidebar.caption("Precision Vancomycin Dosing v1.0 for Christian and his friends")
 
     # A. Demographics (Top Section)
     st.subheader("Patient Stats")
