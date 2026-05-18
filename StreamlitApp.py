@@ -72,7 +72,7 @@ if st.session_state['patient_data_updated']:
             st.session_state['patient_data']['Height'],
             st.session_state['patient_data']['Age'],
             st.session_state['patient_data']['Creatinine'],
-            model="Smit2021"
+            model='Smit2021'
         )
 
         st.session_state['model_initialized'] = True

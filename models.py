@@ -60,3 +60,5 @@ def Lamarre2000(weight, height, age, creatinine):
     iiv = [True, True, True, True]
 
     error_config = {"type": "fixed", "sigma": np.log(0.065 ** 2 + 1)}
+
+    return priors, cov, iiv, error_config

@@ -235,6 +235,8 @@ class VancomycinBayesEngine:
             print("Optimization failed to converge.")
             self.calibrated = False
 
+
+
         return self.map_params if self.calibrated else self.population_mean
 
     def suggest_optimal_regimen(self, n_sims=50000, infusion_time=1.0, use_prior=False):
