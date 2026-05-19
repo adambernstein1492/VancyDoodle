@@ -55,7 +55,7 @@ if 'levels_added' not in st.session_state:
 st.sidebar.header('Patient Data')
 with st.sidebar.popover('Input Patient Data'):
     age = st.number_input(label='Age', value=10, key='age')
-    weight = st.number_input(label='Weight (kg)', value=30, key='weight')
+    weight = st.number_input(label='Weight (kg)', value=30.0, key='weight')
     height = st.number_input(label='Height (cm)', value=140, key='height')
     creatinine = st.number_input(label='Creatinine', value=0.62, key='creatinine')
 
@@ -137,7 +137,7 @@ st.sidebar.divider(width='stretch')
 st.sidebar.header('Vancomycin Blood Levels')
 with st.sidebar.popover('Add a level'):
     level = st.number_input(label='Vancomycin Level (mg/L)')
-    date_time = st.datetime_input(label='Date and Time Level Drawn')
+    date_time = st.datetime_input(label='Date and Time Level Drawn', step=60)
 
     new_level = pd.DataFrame({'Level': level, 'DateTime': [date_time]})
 
