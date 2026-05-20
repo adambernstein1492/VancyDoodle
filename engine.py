@@ -20,6 +20,7 @@ class VancomycinBayesEngine:
         self.level_history = []
         self.map_params = None
         self.calibrated = False
+        self.posterior_covariance = None
 
         # Initialize PK model and error structure
         self.population_mean, self.full_covariance, self.has_iiv, self.error_config = self._initialize_model(model)
@@ -217,13 +218,17 @@ class VancomycinBayesEngine:
             self.calibrated = False
             return self.population_mean
 
+        # Initial guess in log-space for parameters with Inter-Individual Variance (IIV)
         initial_guess = np.log(self.population_mean[self.has_iiv])
 
-        res = minimize(self._objective_function,
+        # Run minimize using 'BFGS' to get the inverse Hessian (hess_inv)
+        # which acts as our posterior parameter covariance matrix
+        res = minimize(
+            self._objective_function,
             initial_guess,
             args=(doses_list, labs_list),
-            method='Nelder-Mead',
-            options={'adaptive': True}
+            method='BFGS',
+            options={'disp': False}
         )
 
         if res.success:
@@ -231,183 +236,279 @@ class VancomycinBayesEngine:
             final_log_params[self.has_iiv] = res.x
             self.map_params = np.exp(final_log_params)
             self.calibrated = True
+
+            # --- EXTRACT POSTERIOR COVARIANCE MATRIX ---
+            # res.hess_inv contains the covariance matrix for the active parameters in log-space
+            # If it's an L-BFGS-B/BFGS operator object, convert it to a dense array via .todense()
+            if hasattr(res.hess_inv, "todense"):
+                active_posterior_cov = res.hess_inv.todense()
+            else:
+                active_posterior_cov = res.hess_inv
+
+            # Reconstruct the full 4x4 matrix, filling the non-IIV parameters with zeros
+            self.posterior_covariance = np.zeros_like(self.full_covariance)
+            self.posterior_covariance[np.ix_(self.has_iiv, self.has_iiv)] = active_posterior_cov
+
         else:
-            print("Optimization failed to converge.")
+            print("Optimization failed to converge. Falling back to population parameters.")
             self.calibrated = False
-
-
+            self.posterior_covariance = None
 
         return self.map_params if self.calibrated else self.population_mean
 
-    def suggest_optimal_regimen(self, n_sims=50000, infusion_time=1.0, use_prior=False):
+    def get_coefficients_of_variation(self):
         """
-        Blazing fast vectorized optimizer that checks both AUC efficacy
-        and Peak toxicity using analytical steady-state. Assumes 1-hr
-        infusion.
+        Calculates the parameter Coefficient of Variation (%) for both
+        the population prior and individual post-fit states.
         """
-        # 1. Setup Parameters
-        mu = np.log(self.population_mean) if use_prior else np.log(self.map_params)
-        cov = self.full_covariance
-        samples = np.random.multivariate_normal(mu, cov, n_sims)
+        # Extract the variance diagonals from log-space
+        prior_variances = np.diag(self.full_covariance)
 
-        intervals = [6, 8, 12, 24]
-        possible_mg = np.arange(25, 2000, 25)
-        results = {'best_overall': None, 'by_interval': {}}
+        # Calculate Prior CV% using log-normal translation
+        prior_cvs = np.sqrt(np.exp(prior_variances) - 1) * 100
+        # Zero out parameters without Inter-Individual Variability (IIV)
+        prior_cvs[~self.has_iiv] = 0.0
 
-        for tau in intervals:
-            t_inf = infusion_time  # Standardize for optimization; can adjust based on dose if needed
+        fit_cvs = None
+        if self.calibrated and self.posterior_covariance is not None:
+            fit_variances = np.diag(self.posterior_covariance)
+            fit_cvs = np.sqrt(np.exp(fit_variances) - 1) * 100
+            fit_cvs[~self.has_iiv] = 0.0
 
-            # 2. Get Unit Values (Performance for a 1mg dose)
-            # We fetch the profile across the interval
-            unit_ss = self._solve_steady_state_analytical(samples, tau, dose=1.0)
+        return prior_cvs, fit_cvs
 
-            # Unit AUC: (Average Conc over interval) * 24 hours
-            unit_auc = np.mean(unit_ss, axis=1) * 24
-
-            # Unit Peak: Finding the concentration at the end of infusion
-            # Our analytic solver returns steps of 0.1hr. t_inf of 1.0 is index 10.
-            peak_idx = int(t_inf / 0.1)
-            unit_peak = unit_ss[:, peak_idx]
-
-            # 3. Vectorized Scoring for all Possible Doses
-            # Broadcast Dose * Unit Performance -> (n_doses, n_sims)
-            auc_matrix = possible_mg[:, np.newaxis] * unit_auc
-            peak_matrix = possible_mg[:, np.newaxis] * unit_peak
-
-            # Calculate Probabilities
-            pta_matrix = (auc_matrix >= 400) & (auc_matrix <= 600)
-            toxic_matrix = (peak_matrix > 50.0)
-
-            pta_scores = np.mean(pta_matrix, axis=1) * 100
-            toxic_scores = np.mean(toxic_matrix, axis=1) * 100
-
-            # 4. Selection Logic: Maximize PTA where Toxicity Risk is low (<25%)
-            safe_mask = toxic_scores < 25.0
-            if np.any(safe_mask):
-                best_idx = np.where(safe_mask, pta_scores, -1).argmax()
-            else:
-                # If no dose is "safe", pick the one with the lowest toxicity risk
-                best_idx = np.argmin(toxic_scores)
-
-            results['by_interval'][tau] = {
-                'interval_hrs': tau,
-                'maint_mg': possible_mg[best_idx],
-                'pta': pta_scores[best_idx],
-                'risk_toxic_peak': toxic_scores[best_idx],
-                'predicted_auc': np.mean(auc_matrix[best_idx])
-            }
-
-        # 5. Global Best (highest PTA across all intervals)
-        all_regimens = list(results['by_interval'].values())
-        results['best_overall'] = max(all_regimens, key=lambda x: x['pta'])
-
-        # 6. Iterative Numerical Search for Loading Dose (Target AUC24 > 450)
-        mu = np.log(self.population_mean) if use_prior else np.log(self.map_params)
-        # Use a smaller sample size for the iterative simulation to maintain performance
-        ld_samples = np.random.multivariate_normal(mu, self.full_covariance, 2000)
-
-        maint_mg = results['best_overall']['maint_mg']
-        tau = results['best_overall']['interval_hrs']
-
-        possible_loads = np.arange(maint_mg, 3250, 25)
-        chosen_ld = maint_mg
-        t_grid_24 = np.linspace(0, 24, 1441)  # 24 hours, 1m steps
-
-        for ld in possible_loads:
-            # Construct a 24h regimen: Loading dose at t=0, then scheduled maintenance
-            regimen_24h = [{"dose": ld, "start": 0.0, "t_inf": 1.5}]
-            for t_start in range(tau, 24, tau):
-                regimen_24h.append({"dose": maint_mg, "start": float(t_start), "t_inf": 1.0})
-
-            # Solve the actual trajectory for the central compartment
-            cc_24, _ = self._solve_trajectory(ld_samples, t_grid_24, regimen_24h)
-
-            # Calculate AUC24 (Average Conc * 24h)
-            auc24_samples = np.mean(cc_24, axis=1) * 24
-
-            # Stop at the first (smallest) dose that hits the efficacy target
-            if np.median(auc24_samples) >= 450:
-                chosen_ld = ld
-                break
-
-        # Fallback if no dose hits the threshold or for very low clearance patients
-        results['loading_dose_mg'] = chosen_ld if chosen_ld > 0 else 500
-
-        return results
-
-    def simulate_profile(self, params, clinical_data, sim_step=(1.0/60.0), extra_hours=48.0):
+    def evaluate_regimen(self, dose_amt, interval, t_inf, n_samples=50000):
         """
-        Simulates the concentration-time profile using a 2-compartment analytical
-        solution and the superposition principle.
-
-        Returns:
-            times (np.array): Array of time points (in hours).
-            total_conc (np.array): Simulated vancomycin concentrations (in mg/L).
+        Simulates steady-state AUC and Peak distributions and calculates
+        all relevant clinical probabilities.
         """
-        Vc, Vp, CL, Q = params[0], params[1], params[2], params[3]
+        if not self.calibrated:
+            mu_log = np.log(self.population_mean)
+            cov_matrix = self.full_covariance
+        else:
+            mu_log = np.log(self.map_params)
+            cov_matrix = self.posterior_covariance if self.posterior_covariance is not None else self.full_covariance
 
-        # 1. Calculate Micro-constants
-        k10 = CL / Vc
-        k12 = Q / Vc
-        k21 = Q / Vp
+        # Generate sample population
+        log_samples = np.random.multivariate_normal(mu_log, cov_matrix, n_samples)
+        param_samples = np.exp(log_samples)
 
-        # 2. Calculate Macro-constants (alpha, beta, A, B)
-        S = k10 + k12 + k21
-        P = k10 * k21
+        Vc, Vp, CL, Q = param_samples[:, 0], param_samples[:, 1], param_samples[:, 2], param_samples[:, 3]
 
-        # Quadratic formula for eigenvalues
+        # 1. Exact AUC24 calculation
+        daily_dose = dose_amt * (24.0 / interval)
+        auc_samples = daily_dose / CL
+
+        # 2. Exact Deterministic Peak calculation
+        k10, k12, k21 = CL / Vc, Q / Vc, Q / Vp
+        S, P = k10 + k12 + k21, k10 * k21
+
         alpha = (S + np.sqrt(S ** 2 - 4 * P)) / 2.0
         beta = (S - np.sqrt(S ** 2 - 4 * P)) / 2.0
-
-        # Coefficients
         A = (alpha - k21) / (Vc * (alpha - beta))
         B = (k21 - beta) / (Vc * (alpha - beta))
 
-        # 3. Setup Simulation Timeline
-        # Determine how long to simulate based on the last event in the data
+        R = dose_amt / t_inf
+
+        peak_samples = R * (
+                (A / alpha) * ((1 - np.exp(-alpha * t_inf)) / (1 - np.exp(-alpha * interval))) +
+                (B / beta) * ((1 - np.exp(-beta * t_inf)) / (1 - np.exp(-beta * interval)))
+        )
+
+        # --- NEW: Perform all statistical percentage calculations here ---
+        metrics = {
+            'p_sub': np.mean(auc_samples < self.target_auc_min) * 100,
+            'p_target': np.mean((auc_samples >= self.target_auc_min) & (auc_samples <= self.target_auc_max)) * 100,
+            'p_supra': np.mean(auc_samples > self.target_auc_max) * 100,
+            'p_peak': np.mean(peak_samples > self.peak) * 100
+        }
+
+        return auc_samples, peak_samples, metrics
+
+
+
+    def simulate_profile(self, params, clinical_data, sim_step=(1.0/60.0), extra_hours=48.0):
+        """
+        Simulates a single concentration-time profile line.
+        Extremely fast point-estimate simulation.
+        """
         if clinical_data.empty:
             return np.array([0]), np.array([0])
 
         max_time = clinical_data['Time_hr'].max()
-        # Create a dense time array from 0 out to max_time + extra_hours
         times = np.arange(0, max_time + extra_hours, sim_step)
-        total_conc = np.zeros_like(times)
+        total_conc = self._compute_superposition(params, clinical_data, times)
+        return times, total_conc
 
-        # 4. Apply Superposition Principle
-        # Filter for only the dosing events
+    def calculate_ci_boundaries(self, params, clinical_data, sim_step=(1.0 / 60.0), extra_hours=48.0, n_samples=500):
+        """
+        Explicitly runs the Monte Carlo simulation to return upper and lower bounds.
+        Run this ONLY once per fit operation to save computing power.
+        """
+        if clinical_data.empty:
+            return None, None
+
+        max_time = clinical_data['Time_hr'].max()
+        times = np.arange(0, max_time + extra_hours, sim_step)
+
+        is_prior = np.array_equal(params, self.population_mean)
+        if is_prior:
+            mu_log = np.log(self.population_mean)
+            cov_matrix = self.full_covariance
+        else:
+            mu_log = np.log(self.map_params)
+            cov_matrix = self.posterior_covariance if self.posterior_covariance is not None else self.full_covariance
+
+        # Generate Monte Carlo samples
+        log_samples = np.random.multivariate_normal(mu_log, cov_matrix, n_samples)
+        param_samples = np.exp(log_samples)
+
+        matrix_profiles = np.zeros((n_samples, len(times)))
+        for idx in range(n_samples):
+            matrix_profiles[idx, :] = self._compute_superposition(param_samples[idx], clinical_data, times)
+
+        ci_lower = np.percentile(matrix_profiles, 2.5, axis=0)
+        ci_upper = np.percentile(matrix_profiles, 97.5, axis=0)
+        return ci_lower, ci_upper
+
+    def _compute_superposition(self, params, clinical_data, times):
+        """Helper matrix-builder to compute individual superposition lines."""
+        Vc, Vp, CL, Q = params[0], params[1], params[2], params[3]
+        k10, k12, k21 = CL / Vc, Q / Vc, Q / Vp
+        S, P = k10 + k12 + k21, k10 * k21
+
+        alpha = (S + np.sqrt(S ** 2 - 4 * P)) / 2.0
+        beta = (S - np.sqrt(S ** 2 - 4 * P)) / 2.0
+        A = (alpha - k21) / (Vc * (alpha - beta))
+        B = (k21 - beta) / (Vc * (alpha - beta))
+
+        conc_line = np.zeros_like(times)
         doses = clinical_data[clinical_data['Event'] == 'Dose']
 
         for _, row in doses.iterrows():
-            t_start = float(row['Time_hr'])
-            dose_amt = float(row['Dose'])
-            t_inf = float(row['InfusionTime'])
-
-            # Skip invalid doses
+            t_start, dose_amt, t_inf = float(row['Time_hr']), float(row['Dose']), float(row['InfusionTime'])
             if pd.isna(dose_amt) or pd.isna(t_inf) or t_inf <= 0:
                 continue
 
-            # Infusion Rate (mg/hr)
             R = dose_amt / t_inf
-
-            # Time relative to the start of THIS specific dose
             t_rel = times - t_start
-
-            # Create boolean masks for vectorization
             during_inf = (t_rel >= 0) & (t_rel <= t_inf)
             post_inf = (t_rel > t_inf)
 
-            # Add contribution DURING the infusion
-            total_conc[during_inf] += R * (
+            conc_line[during_inf] += R * (
                     (A / alpha) * (1 - np.exp(-alpha * t_rel[during_inf])) +
                     (B / beta) * (1 - np.exp(-beta * t_rel[during_inf]))
             )
-
-            # Add contribution AFTER the infusion has stopped
             t_post = t_rel[post_inf] - t_inf
-            total_conc[post_inf] += R * (
+            conc_line[post_inf] += R * (
                     (A / alpha) * (1 - np.exp(-alpha * t_inf)) * np.exp(-alpha * t_post) +
                     (B / beta) * (1 - np.exp(-beta * t_inf)) * np.exp(-beta * t_post)
             )
+        return conc_line
 
-        return times, total_conc
+    def suggest_regimens(self, dose_step=25.0, n_samples=50000):
+        """
+        Simulates a matrix of standard intervals and dose increments.
+        Returns a dictionary mapping interval strings (e.g., 'q6hr') to a list
+        of 5 doses centered around the optimal choice for that interval.
+        """
+        if not self.calibrated:
+            mu_log = np.log(self.population_mean)
+            cov_matrix = self.full_covariance
+        else:
+            mu_log = np.log(self.map_params)
+            cov_matrix = self.posterior_covariance if self.posterior_covariance is not None else self.full_covariance
+
+        # Generate sample population ONCE for extreme efficiency
+        log_samples = np.random.multivariate_normal(mu_log, cov_matrix, n_samples)
+        param_samples = np.exp(log_samples)
+
+        Vc = param_samples[:, 0]
+        CL = param_samples[:, 2]
+
+        # Calculate micro-constants once for the whole population
+        k10, k12, k21 = CL / Vc, param_samples[:, 3] / Vc, param_samples[:, 3] / param_samples[:, 1]
+        S, P = k10 + k12 + k21, k10 * k21
+        alpha = (S + np.sqrt(S ** 2 - 4 * P)) / 2.0
+        beta = (S - np.sqrt(S ** 2 - 4 * P)) / 2.0
+
+        A = (alpha - k21) / (Vc * (alpha - beta))
+        B = (k21 - beta) / (Vc * (alpha - beta))
+
+        intervals = [6, 8, 12, 24]
+        min_dose = max(dose_step, np.floor((5.0 * self.weight) / dose_step) * dose_step)
+        max_dose = np.ceil((35.0 * self.weight) / dose_step) * dose_step
+        doses = np.arange(min_dose, max_dose + dose_step, dose_step)
+
+        grid_results = {}
+
+        for interval in intervals:
+            regimen_scores = []
+            for dose in doses:
+                t_inf = 1.0 if dose < 1000 else (1.5 if dose < 1500 else 2.0)
+
+                # 1. Deterministic AUC24
+                daily_dose = dose * (24.0 / interval)
+                auc_samples = daily_dose / CL
+
+                # 2. Deterministic Peak
+                R = dose / t_inf
+                peak_samples = R * (
+                        (A / alpha) * ((1 - np.exp(-alpha * t_inf)) / (1 - np.exp(-alpha * interval))) +
+                        (B / beta) * ((1 - np.exp(-beta * t_inf)) / (1 - np.exp(-beta * interval)))
+                )
+
+                # Probabilities
+                p_target = np.mean((auc_samples >= self.target_auc_min) & (auc_samples <= self.target_auc_max)) * 100
+                p_supra = np.mean(auc_samples > self.target_auc_max) * 100
+                p_peak = np.mean(peak_samples > self.peak) * 100
+
+                # Scoring: Maximize PTA, penalize toxicity
+                score = p_target
+                regimen_scores.append({
+                    'dose': int(dose),
+                    'pta': p_target,
+                    'score': score,
+                    'supra_risk': np.mean(auc_samples > self.target_auc_max) * 100  # Keep for table display
+                })
+
+            # Find the best dose and its 2 neighbors on each side
+            sorted_doses = sorted(regimen_scores, key=lambda x: x['score'], reverse=True)
+            best_dose = sorted_doses[0]['dose']
+            best_idx = np.where(doses == best_dose)[0][0]
+
+            # Extract 5 surrounding doses (clamped to array boundaries)
+            idx_range = np.arange(best_idx - 2, best_idx + 3)
+            idx_range = np.clip(idx_range, 0, len(doses) - 1)
+
+            grid_results[f"q{interval}hr"] = [doses[i] for i in idx_range]
+
+        return grid_results
+
+    def get_steady_state_auc(self, clinical_data):
+        """
+        Calculates the deterministic steady-state AUC based on the last
+        known interval in the dosing history.
+        """
+        if not self.calibrated or clinical_data.empty:
+            return None
+
+        # Filter for doses
+        doses = clinical_data[clinical_data['Event'] == 'Dose']
+        if doses.empty:
+            return None
+
+        # Get the most recent dose and interval
+        last_dose = doses.iloc[-1]
+        # Calculate interval as time between last two doses, default to 12 if only one dose
+        if len(doses) > 1:
+            interval = doses.iloc[-1]['Time_hr'] - doses.iloc[-2]['Time_hr']
+        else:
+            interval = 12.0  # Default fallback
+
+        # AUC_ss = Daily Dose / CL
+        daily_dose = last_dose['Dose'] * (24.0 / interval)
+        CL = self.map_params[2]  # 3rd parameter is CL
+
+        return daily_dose / CL
 

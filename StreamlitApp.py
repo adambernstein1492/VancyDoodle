@@ -5,11 +5,12 @@ import Visualization
 from engine import VancomycinBayesEngine
 
 ########################################## TITLE PAGE ##############################################
-st.set_page_config(page_title='Vanc you very much: Vancomycin Model-Informed Precision Dosing Tool',
-                   page_icon='logo.png',
+st.set_page_config(page_title='Pediatric Vancomycin Model-Informed Precision Dosing Tool',
+                   page_icon='logo1.png',
                    layout="wide")
-st.title('Vanc you very much: Vancomycin Model-Informed Precision Dosing Tool', width='stretch')
-st.sidebar.image('logo.png')
+
+st.title('Pediatric Vancomycin Model-Informed Precision Dosing Tool', width='stretch')
+st.sidebar.image('logo1.png')
 st.subheader('An interactive vancomycin dosing tool meant for demonstration purposes, not intended for clinical use.')
 st.divider(width='stretch')
 ########################################## TITLE PAGE ##############################################
@@ -26,6 +27,15 @@ if 'doses' not in st.session_state:
 
 if 'levels' not in st.session_state:
     st.session_state['levels'] = pd.DataFrame({'Level': [], 'DateTime': []})
+
+if 'clinical_data' not in st.session_state:
+    st.session_state['clinical_data'] = pd.DataFrame()
+
+if 'prior_ci' not in st.session_state:
+    st.session_state['prior_ci'] = (None, None)
+
+if 'fit_ci' not in st.session_state:
+    st.session_state['fit_ci'] = (None, None)
 
 if 'dosing_regimen' not in st.session_state:
     st.session_state['dosing_regimen'] = False
@@ -71,11 +81,14 @@ if st.session_state['patient_data_updated']:
             st.session_state['patient_data']['Weight'],
             st.session_state['patient_data']['Height'],
             st.session_state['patient_data']['Age'],
-            st.session_state['patient_data']['Creatinine'],
-            model='Smit2021'
+            st.session_state['patient_data']['Creatinine']
         )
-
         st.session_state['model_initialized'] = True
+        st.session_state['data_fit'] = False
+
+        # Reset CI states on initialization
+        st.session_state['prior_ci'] = (None, None)
+        st.session_state['fit_ci'] = (None, None)
 
 st.sidebar.divider(width='stretch')
 
@@ -164,28 +177,53 @@ has_levels = not st.session_state['levels'].empty
 if st.session_state['model_initialized'] and has_doses and has_levels:
     if st.sidebar.button('Fit Data'):
         # Format input data
+        engine = st.session_state['bayes_engine']
+
+        # Ensure clinical data is fully up to date right before fitting
         st.session_state['clinical_data'] = IOfunctions.format_input_data(
             st.session_state['levels'],
             st.session_state['doses']
         )
 
-        # Run the fitting engine
-        st.session_state['bayes_engine'].fit_patient(st.session_state['clinical_data'])
-
-        # Flag that the fit is complete
+        # Run MAP parameter estimation
+        engine.fit_patient(st.session_state['clinical_data'])
         st.session_state['data_fit'] = True
 
-# Initialize the engine - all that needs to be done prior to this running is the patient demographics must be udpated
-col1, col2, col3 = st.columns([0.2, 0.7, 0.1], vertical_alignment='center')
+        # --- CALCULATE BOTH CIs SIMULTANEOUSLY HERE ---
+        # 1. Prior CI (using population parameters)
+        prior_low, prior_high = engine.calculate_ci_boundaries(
+            engine.population_mean,
+            st.session_state['clinical_data']
+        )
+        st.session_state['prior_ci'] = (prior_low, prior_high)
 
-# --- COLUMN 1: The Table ---
+        # 2. Post-Fit MAP CI (using individualized parameters & posterior covariance)
+        fit_low, fit_high = engine.calculate_ci_boundaries(
+            engine.map_params,
+            st.session_state['clinical_data']
+        )
+        st.session_state['fit_ci'] = (fit_low, fit_high)
+
+        st.sidebar.success("Optimization and uncertainty profiling complete!")
+
+# Initialize the engine - all that needs to be done prior to this running is the patient demographics must be udpated
+col1, col2, col3 = st.columns([0.3, 0.6, 0.1], vertical_alignment='center')
+
+# --- COLUMN 1: The Tables ---
 if st.session_state['model_initialized']:
     col1.subheader('Pharmacokinetic Parameters')
     engine = st.session_state['bayes_engine']
 
-    # Call the new function to get the clean DataFrame
+    # 1. Main PK Parameter Table
     pk_df = Visualization.get_pk_table(engine)
     col1.dataframe(pk_df, hide_index=True, width='stretch')
+
+    col1.write("")  # Spacer
+
+    # 2. Coefficient of Variation Table (Rendered directly underneath)
+    col1.subheader('Parameter Uncertainty (CV%)')
+    cv_df = Visualization.get_cv_table(engine)
+    col1.dataframe(cv_df, hide_index=True, width='stretch')
 
 # --- COLUMNS 2 & 3: The Plot and Checkboxes ---
 if st.session_state['data_fit']:
@@ -195,18 +233,127 @@ if st.session_state['data_fit']:
         show_prior = st.checkbox('Prior PK', value=True)
         show_fit = st.checkbox('Fit PK', value=True)
         show_labs = st.checkbox('Lab Values', value=True)
+        show_ci = st.checkbox('Show 95% CIs', value=False)
+
+        st.write("---")
+        st.caption("Predicted Steady-State AUC:")
+
+        engine = st.session_state['bayes_engine']
+        auc_ss = engine.get_steady_state_auc(st.session_state['clinical_data'])
+
+        if auc_ss:
+            # Determine color
+            if 400 <= auc_ss <= 600:
+                color = "green"
+            elif auc_ss < 400:
+                color = "orange"
+            else:
+                color = "red"
+
+            st.markdown(f"### <span style='color:{color}'>{auc_ss:.1f}</span>", unsafe_allow_html=True)
+        else:
+            st.text("—")
 
     with col2:
         st.subheader('Predicted Vancomycin Concentrations')
 
-        # Call the new function, passing the checkbox states directly into it
+        # Safely extract the calculated boundaries from session state
+        prior_bounds = st.session_state.get('prior_ci', (None, None))
+        fit_bounds = st.session_state.get('fit_ci', (None, None))
+
         fig = Visualization.get_concentration_plot(
             engine=st.session_state['bayes_engine'],
             clinical_data=st.session_state['clinical_data'],
             show_prior=show_prior,
             show_fit=show_fit,
-            show_labs=show_labs
+            show_labs=show_labs,
+            show_ci=show_ci,
+            prior_ci_bounds=prior_bounds,
+            fit_ci_bounds=fit_bounds
         )
 
         st.plotly_chart(fig, width='stretch')
+
+# --- REGIMEN OPTIMIZER ---
+if st.session_state.get('model_initialized', False):
+    st.write("---")
+    st.subheader("Dosing Interval Grid")
+    st.markdown(
+        "Generates optimal doses across standard intervals. The **central column** highlights the regimen with the highest target attainment score.")
+
+    # 1. UI: Input Section
+    opt_c1, opt_c2 = st.columns([0.25, 0.75])
+
+    with opt_c1:
+        st.write("")  # Alignment spacing
+        dose_increment = st.number_input("Dose Increment (mg)", min_value=5.0, max_value=250.0, value=25.0, step=5.0)
+        generate_regimens = st.button("Generate Recommendations", width='stretch')
+
+    with opt_c2:
+        # 2. Execution & State Persistence
+        if generate_regimens:
+            engine = st.session_state['bayes_engine']
+            with st.spinner("Simulating multi-regimen matrix..."):
+                # Call engine logic and cache results in session state
+                st.session_state['regimen_grid'] = engine.suggest_regimens(dose_step=dose_increment)
+
+        # 3. Render: Display table if it exists in memory
+        if 'regimen_grid' in st.session_state:
+            grid_results = st.session_state['regimen_grid']
+            if not grid_results:
+                st.warning("No regimens met the minimum threshold for target attainment.")
+            else:
+                # Apply the styling via Visualization module
+                styled_df = Visualization.get_regimen_grid(grid_results)
+                st.dataframe(styled_df, width='stretch', hide_index=False)
+
+            st.info(
+                "The central column indicates the optimal dose for each interval based on the current patient model.")
+
+# --- PREDICTIVE REGIMEN EVALUATION ---
+if st.session_state.get('model_initialized', False):
+    st.write("---")
+    st.subheader("Predictive Regimen Evaluation")
+    st.markdown("Test a maintenance dosing regimen to predict steady-state performance and toxicity risks.")
+
+    # 1. UI: Collect Inputs inside a form to prevent reruns while typing
+    with st.form(key="regimen_eval_form"):
+        rc1, rc2, rc3, rc4 = st.columns(4)
+        eval_dose = rc1.number_input("Test Dose (mg)", min_value=0.0, value=750.0, step=50.0)
+        eval_int = rc2.number_input("Test Interval (hrs)", min_value=1.0, value=12.0, step=1.0)
+        eval_tinf = rc3.number_input("Infusion Time (hrs)", min_value=0.5, value=1.0, step=0.25)
+
+        rc4.write("")
+        rc4.write("")
+        submit_eval = rc4.form_submit_button("Simulate Regimen", width='stretch')
+
+    # 2. Execution Block: Only calculate when the button is clicked
+    if submit_eval:
+        engine = st.session_state['bayes_engine']
+        with st.spinner("Calculating deterministic steady-state limits..."):
+            auc_samples, peak_samples, metrics = engine.evaluate_regimen(eval_dose, eval_int, eval_tinf)
+
+            # Save results into memory so they survive layout interactions (like toggling CIs)
+            st.session_state['eval_results'] = {
+                'auc_samples': auc_samples,
+                'metrics': metrics
+            }
+
+    # 3. UI: Render Metrics and Chart from the cached session memory
+    if 'eval_results' in st.session_state:
+        metrics = st.session_state['eval_results']['metrics']
+        auc_samples = st.session_state['eval_results']['auc_samples']
+        engine = st.session_state['bayes_engine']
+
+        st.write("")
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Subtherapeutic Risk", f"{metrics['p_sub']:.1f}%", "< 400 AUC", delta_color="off")
+        mc2.metric("Target Probability", f"{metrics['p_target']:.1f}%", "400 - 600 AUC", delta_color="normal")
+        mc3.metric("Supratherapeutic Risk", f"{metrics['p_supra']:.1f}%", "> 600 AUC", delta_color="off")
+        mc4.metric("Toxic Peak Risk", f"{metrics['p_peak']:.1f}%", "> 50 mg/L", delta_color="inverse")
+        st.write("")
+
+        # Render Plotly Histogram
+        fig_hist = Visualization.get_auc_histogram(auc_samples, engine.target_auc_min, engine.target_auc_max)
+        st.plotly_chart(fig_hist, width='stretch')
 
