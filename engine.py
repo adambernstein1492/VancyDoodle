@@ -6,7 +6,7 @@ import models
 
 class VancomycinBayesEngine:
     def __init__(self, weight_kg, height_cm, age_years, creatinine, model="Smit2021",
-                 target_auc_min=400.0, target_auc_max=600.0, trough_min=8.0, trough_max=12.0, peak = 50.0):
+                 target_auc_min=400.0, target_auc_max=600.0, trough_min=8.0, trough_max=12.0, peak=50.0):
         self.weight = weight_kg
         self.height = height_cm
         self.creatinine = creatinine
@@ -36,7 +36,6 @@ class VancomycinBayesEngine:
 
         if model_name == 'Lamarre2000':
             priors, cov, iiv, error_config = models.Lamarre2000(self.weight, self.height, self.age, self.creatinine)
-
 
         return priors, cov, np.array(iiv, dtype=bool), error_config
 
@@ -95,71 +94,6 @@ class VancomycinBayesEngine:
 
         results[:, :, -1] = y
         return results[0], results[1]
-
-    def _solve_steady_state_analytical(self, log_samples, interval, dose):
-        """
-        Analytic Steady State solution for a 2-compartment model.
-        Eliminates numerical instability and overflow.
-        """
-        if log_samples.ndim == 1:
-            log_samples = log_samples[np.newaxis, :]
-
-        n_sims = log_samples.shape[0]
-        params = np.exp(log_samples)
-        vc, vp, cl, q = params[:, 0], params[:, 1], params[:, 2], params[:, 3]
-
-        # Calculate micro-constants
-        k10 = cl / vc
-        k12 = q / vc
-        k21 = q / vp
-
-        # Calculate hybrid rate constants (alpha and beta)
-        sum_k = k10 + k12 + k21
-        prod_k = k10 * k21
-
-        alpha = 0.5 * (sum_k + np.sqrt(sum_k ** 2 - 4 * prod_k))
-        beta = 0.5 * (sum_k - np.sqrt(sum_k ** 2 - 4 * prod_k))
-
-        # Coefficients for the two-compartment equation
-        A = (alpha - k21) / (vc * (alpha - beta))
-        B = (k21 - beta) / (vc * (alpha - beta))
-
-        t_inf = 1.0 if dose < 1000 else 1.5
-        t_steps = np.arange(0, interval + 0.1, 0.1)
-        results = np.zeros((n_sims, len(t_steps)))
-
-        # Steady State Infusion Formula
-        # Css(t) = (Rate/alpha)*A*(1-exp(-alpha*t_inf))/(1-exp(-alpha*tau))*exp(-alpha*(t-t_inf)) ...
-        for i, t in enumerate(t_steps):
-            # During Infusion
-            if t <= t_inf:
-                term_a = (A / alpha) * (1 - np.exp(-alpha * t)) / (1 - np.exp(-alpha * interval))
-                term_b = (B / beta) * (1 - np.exp(-beta * t)) / (1 - np.exp(-beta * interval))
-                # Adjustment for accumulation from previous doses
-                # Note: A more precise during-infusion SS formula
-                inf_a = (A / alpha) * ((1 - np.exp(-alpha * t)) + (np.exp(-alpha * t) * (
-                            np.exp(-alpha * (interval - t_inf)) * (1 - np.exp(-alpha * t_inf)) / (
-                                1 - np.exp(-alpha * interval)))))
-                inf_b = (B / beta) * ((1 - np.exp(-beta * t)) + (np.exp(-beta * t) * (
-                            np.exp(-beta * (interval - t_inf)) * (1 - np.exp(-beta * t_inf)) / (
-                                1 - np.exp(-beta * interval)))))
-                results[:, i] = (dose / t_inf) * (inf_a + inf_b)
-
-            # After Infusion (Decay)
-            else:
-                post_a = (A / alpha) * (1 - np.exp(-alpha * t_inf)) / (1 - np.exp(-alpha * interval)) * np.exp(
-                    -alpha * (t - t_inf))
-                post_b = (B / beta) * (1 - np.exp(-beta * t_inf)) / (1 - np.exp(-beta * interval)) * np.exp(
-                    -beta * (t - t_inf))
-                results[:, i] = (dose / t_inf) * (post_a + post_b)
-
-        return results
-
-    def _get_derivatives_vectorized(self, y, r, vc, k10, k12, k21):
-        cc, cp = y[0], y[1]
-        d_cc = (r / vc) - (k10 + k12) * cc + k21 * cp
-        d_cp = k12 * cc - k21 * cp
-        return np.array([d_cc, d_cp])
 
     def _objective_function(self, active_log_params, doses, labs):
         """MAP Bayesian objective with stable integration grid."""
@@ -277,7 +211,7 @@ class VancomycinBayesEngine:
 
         return prior_cvs, fit_cvs
 
-    def evaluate_regimen(self, dose_amt, interval, t_inf, n_samples=50000):
+    def evaluate_regimen(self, dose_amt, interval, t_inf, n_samples=500000):
         """
         Simulates steady-state AUC and Peak distributions and calculates
         all relevant clinical probabilities.
@@ -325,9 +259,7 @@ class VancomycinBayesEngine:
 
         return auc_samples, peak_samples, metrics
 
-
-
-    def simulate_profile(self, params, clinical_data, sim_step=(1.0/60.0), extra_hours=48.0):
+    def simulate_profile(self, params, clinical_data, sim_step=(1.0 / 60.0), extra_hours=48.0):
         """
         Simulates a single concentration-time profile line.
         Extremely fast point-estimate simulation.
@@ -409,8 +341,8 @@ class VancomycinBayesEngine:
     def suggest_regimens(self, dose_step=25.0, n_samples=50000):
         """
         Simulates a matrix of standard intervals and dose increments.
-        Returns a dictionary mapping interval strings (e.g., 'q6hr') to a list
-        of 5 doses centered around the optimal choice for that interval.
+        Returns a dictionary mapping interval strings (e.g., 'q6hr') to the
+        optimal dose and its corresponding safety and efficacy metrics.
         """
         if not self.calibrated:
             mu_log = np.log(self.population_mean)
@@ -469,19 +401,20 @@ class VancomycinBayesEngine:
                     'dose': int(dose),
                     'pta': p_target,
                     'score': score,
-                    'supra_risk': np.mean(auc_samples > self.target_auc_max) * 100  # Keep for table display
+                    'supra_risk': p_supra,
+                    'peak_risk': p_peak
                 })
 
-            # Find the best dose and its 2 neighbors on each side
+            # Find the best dose
             sorted_doses = sorted(regimen_scores, key=lambda x: x['score'], reverse=True)
-            best_dose = sorted_doses[0]['dose']
-            best_idx = np.where(doses == best_dose)[0][0]
+            best = sorted_doses[0]
 
-            # Extract 5 surrounding doses (clamped to array boundaries)
-            idx_range = np.arange(best_idx - 2, best_idx + 3)
-            idx_range = np.clip(idx_range, 0, len(doses) - 1)
-
-            grid_results[f"q{interval}hr"] = [doses[i] for i in idx_range]
+            grid_results[f"q{interval}hr"] = {
+                'Optimal Dose': f"{best['dose']} mg",
+                '% PTA': f"{best['pta']:.1f}%",
+                'AUC > 600 Risk': f"{best['supra_risk']:.1f}%",
+                'Peak > 50 Risk': f"{best['peak_risk']:.1f}%"
+            }
 
         return grid_results
 
@@ -500,11 +433,11 @@ class VancomycinBayesEngine:
 
         # Get the most recent dose and interval
         last_dose = doses.iloc[-1]
-        # Calculate interval as time between last two doses, default to 12 if only one dose
+        # Calculate interval as time between last two doses, default to 8 if only one dose
         if len(doses) > 1:
-            interval = doses.iloc[-1]['Time_hr'] - doses.iloc[-2]['Time_hr']
+            interval = round(doses.iloc[-1]['Time_hr'] - doses.iloc[-2]['Time_hr'])
         else:
-            interval = 12.0  # Default fallback
+            interval = 8.0  # Default fallback
 
         # AUC_ss = Daily Dose / CL
         daily_dose = last_dose['Dose'] * (24.0 / interval)
@@ -512,3 +445,69 @@ class VancomycinBayesEngine:
 
         return daily_dose / CL
 
+    def estimate_1compartment_pk(self, clinical_data):
+        from scipy.stats import linregress
+        if clinical_data.empty:
+            return {"error": "No clinical data."}
+
+        doses = clinical_data[clinical_data['Event'] == 'Dose'].copy()
+        levels = clinical_data[clinical_data['Event'] == 'Level'].copy()
+
+        if len(doses) == 0 or len(levels) < 2:
+            return {"error": "Need at least 1 dose and 2 levels for estimation."}
+
+        rel_times = []
+        log_conc = []
+
+        last_dose_row = doses.iloc[-1]
+        last_dose_amt = last_dose_row['Dose']
+        t_inf = last_dose_row['InfusionTime']
+
+        if len(doses) > 1:
+            intervals = np.diff(doses['Time_hr'])
+            interval = round(np.mean(intervals[intervals > 0])) if any(intervals > 0) else 24.0
+        else:
+            interval = 24.0
+
+        for _, level in levels.iterrows():
+            lvl_time = level['Time_hr']
+            past_doses = doses[doses['Time_hr'] <= lvl_time]
+            if len(past_doses) > 0:
+                last_dose = past_doses.iloc[-1]
+                t_since_dose = lvl_time - last_dose['Time_hr']
+                if level['Level'] > 0:
+                    rel_times.append(t_since_dose)
+                    log_conc.append(np.log(level['Level']))
+
+        if len(rel_times) < 2:
+            return {"error": "Need at least 2 levels with preceding doses."}
+
+        slope, intercept, _, _, _ = linregress(rel_times, log_conc)
+        ke = -slope
+
+        if ke <= 0:
+            return {
+                "error": "Calculated elimination rate constant is zero or negative. Ensure peak is higher than trough."}
+
+        t_half = np.log(2) / ke
+
+        Cmax = np.exp(intercept - ke * t_inf)
+        Cmin = np.exp(intercept - ke * interval)
+
+        Rate = last_dose_amt / t_inf
+        V = (Rate / ke) * (1 - np.exp(-ke * t_inf)) / (Cmax * (1 - np.exp(-ke * interval)))
+        V_kg = V / self.weight
+
+        CL = ke * V
+
+        daily_dose = last_dose_amt * (24.0 / interval)
+        AUC = (0.5 * (Cmin + Cmax) * t_inf + (Cmax - Cmin) / ke) * 24 / interval
+
+        return {
+            "Half-life (hr)": t_half,
+            "Clearance (L/hr)": CL,
+            "Volume of Distribution (L/kg)": V_kg,
+            "Estimated Cmax (mg/L)": Cmax,
+            "Estimated Cmin (mg/L)": Cmin,
+            "Estimated AUC24": AUC
+        }
