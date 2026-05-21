@@ -25,7 +25,9 @@ def format_input_data(levels_df, doses_df):
         levels['DateTime'] = pd.to_datetime(levels['DateTime'])
         levels['Event'] = 'Level'
 
-    clinical_data = pd.concat([doses, levels], ignore_index=True)
+    # Filter out empty dataframes before concatenating
+    dfs_to_concat = [df for df in [doses, levels] if not df.empty]
+    clinical_data = pd.concat(dfs_to_concat, ignore_index=True) if dfs_to_concat else pd.DataFrame()
 
     if clinical_data.empty:
         return clinical_data

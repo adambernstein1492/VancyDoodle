@@ -37,6 +37,9 @@ class VancomycinBayesEngine:
         if model_name == 'Lamarre2000':
             priors, cov, iiv, error_config = models.Lamarre2000(self.weight, self.height, self.age, self.creatinine)
 
+        if model_name == 'Le2013':
+            priors, cov, iiv, error_config = models.Le2013(self.weight, self.height, self.age, self.creatinine)
+
         return priors, cov, np.array(iiv, dtype=bool), error_config
 
     def _calculate_sigma(self, predictions):

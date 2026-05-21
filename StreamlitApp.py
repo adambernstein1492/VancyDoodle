@@ -275,6 +275,134 @@ if st.session_state['data_fit']:
 
         st.plotly_chart(fig, width='stretch')
 
+
+# --- PREDICTIVE REGIMEN EVALUATION ---
+if st.session_state.get('model_initialized', False):
+    st.write("---")
+    st.subheader("Predictive Regimen Evaluation")
+    st.markdown("Test a maintenance dosing regimen to predict steady-state performance and toxicity risks.")
+
+    # --- PROCESS PENDING GRID CLICKS ---
+    # Because the grid is rendered below these inputs, we must intercept its selection state
+    # BEFORE rendering the predictive widgets to avoid Streamlit state assignment errors.
+    grid_state = st.session_state.get('interactive_regimen_grid', {})
+    if grid_state and "selection" in grid_state and grid_state["selection"]["rows"]:
+        current_selection = grid_state["selection"]["rows"][0]
+        last_selection = st.session_state.get('last_grid_selection', None)
+
+        if current_selection != last_selection:
+            st.session_state['last_grid_selection'] = current_selection
+
+            # Extract the recommended interval and dose from the stored grid results
+            if 'regimen_grid' in st.session_state and st.session_state['regimen_grid']:
+                temp_df = Visualization.get_regimen_grid(st.session_state['regimen_grid']).data
+                interval_str = temp_df.index[current_selection]
+                interval_val = float(interval_str.replace('q', '').replace('hr', ''))
+
+                dose_str = temp_df.iloc[current_selection]['Optimal Dose']
+                dose_val = float(dose_str.replace(' mg', ''))
+
+                # Safely update the widget state BEFORE they render
+                st.session_state['eval_dose_input'] = dose_val
+                st.session_state['eval_int_input'] = interval_val
+
+    # 1. Initialize default values in session state if they don't exist yet
+    if 'eval_dose_input' not in st.session_state:
+        default_dose = 750.0
+        if 'regimen_grid' in st.session_state and 'q8hr' in st.session_state['regimen_grid']:
+            opt_dose_str = st.session_state['regimen_grid']['q8hr']['Optimal Dose']
+            default_dose = float(opt_dose_str.replace(' mg', ''))
+
+        st.session_state['eval_dose_input'] = default_dose
+        st.session_state['eval_int_input'] = 8.0
+
+    # 2. UI: Collect Inputs (Bound directly to session state keys)
+    rc1, rc2, rc3 = st.columns(3)
+
+    eval_dose = rc1.number_input("Test Dose (mg)", min_value=0.0, step=25.0, key='eval_dose_input')
+    eval_int = rc2.number_input("Test Interval (hrs)", min_value=1.0, step=1.0, key='eval_int_input')
+    eval_tinf = rc3.number_input("Infusion Time (hrs)", min_value=0.5, value=1.0, step=0.25)
+
+    # 2. Execution Block: Calculate automatically on input change
+    engine = st.session_state['bayes_engine']
+
+    with st.spinner("Calculating deterministic steady-state limits..."):
+        auc_samples, peak_samples, metrics = engine.evaluate_regimen(eval_dose, eval_int, eval_tinf)
+
+    # 3. UI: Render Metrics and Chart
+    st.write("")
+    mc1, mc2, mc3, mc4 = st.columns(4)
+
+    mc1.metric("Subtherapeutic Risk", f"{metrics['p_sub']:.1f}%", "< 400 AUC", delta_color="off")
+    mc2.metric("Target Probability", f"{metrics['p_target']:.1f}%", "400 - 600 AUC", delta_color="normal")
+    mc3.metric("Supratherapeutic Risk", f"{metrics['p_supra']:.1f}%", "> 600 AUC", delta_color="inverse")
+    mc4.metric("Toxic Peak Risk", f"{metrics['p_peak']:.1f}%", "> 50 mg/L", delta_color="inverse")
+
+    st.write("")
+
+    fig_hist = Visualization.get_auc_histogram(auc_samples, engine.target_auc_min, engine.target_auc_max)
+    fig_reg_prof = Visualization.get_predicted_regimen_plot(engine, st.session_state['clinical_data'], eval_dose,
+                                                            eval_int, eval_tinf)
+
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        st.plotly_chart(fig_hist, width='stretch')
+    with col_p2:
+        st.plotly_chart(fig_reg_prof, width='stretch')
+
+
+# --- REGIMEN OPTIMIZER ---
+if st.session_state.get('model_initialized', False):
+
+    col1, col2, col3 = st.columns([0.3, 0.4, 0.3])
+
+    engine = st.session_state['bayes_engine']
+
+    # 1. Ensure the increment is in memory
+    if 'dose_increment' not in st.session_state:
+        st.session_state['dose_increment'] = 25.0
+
+    current_increment = st.session_state['dose_increment']
+
+    # 2. Execution & Smart Caching
+    state_id = f"{current_increment}_{engine.calibrated}"
+    if engine.calibrated and engine.map_params is not None:
+        state_id += f"_{engine.map_params[0]}"
+
+    if st.session_state.get('regimen_state_id') != state_id or 'regimen_grid' not in st.session_state:
+        with st.spinner("Simulating optimal regimens..."):
+            st.session_state['regimen_grid'] = engine.suggest_regimens(dose_step=current_increment)
+            st.session_state['regimen_state_id'] = state_id
+
+    with col3:
+        st.write("")
+        st.write("")
+        st.write("")
+        st.write("")
+        dose_increment = st.number_input("Dose Increment (mg)", min_value=5.0, max_value=250.0, step=5.0, width=150,
+                                         key='dose_increment')
+
+    with col2:
+        st.info("The optimal dose for each interval is chosen to maximize Probability of Target Attainment (PTA).")
+
+        grid_results = st.session_state['regimen_grid']
+        if not grid_results:
+            st.warning("No regimens met the minimum threshold for target attainment.")
+        else:
+            styled_df = Visualization.get_regimen_grid(grid_results)
+
+            # We removed the row-click processing logic from down here;
+            # it is now safely handled above the predictive evaluation block.
+            st.dataframe(
+                styled_df,
+                width='stretch',
+                hide_index=False,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="interactive_regimen_grid",
+            )
+
+
 # --- 1-COMPARTMENT ESTIMATION ---
 if st.session_state.get('model_initialized', False) and st.session_state.get('data_fit', False):
     st.write("---")
@@ -300,125 +428,3 @@ if st.session_state.get('model_initialized', False) and st.session_state.get('da
         st.markdown("**Trajectory Comparison (Phase Plot)**")
         fig_1cmt = Visualization.get_1cmt_comparison_plot(engine, st.session_state['clinical_data'], pk_estimates)
         st.plotly_chart(fig_1cmt, width='stretch')
-
-# --- REGIMEN OPTIMIZER ---
-if st.session_state.get('model_initialized', False):
-    st.write("---")
-    st.subheader("Model-based Dose Recommendations")
-    st.markdown(
-        "Generates optimal doses across standard intervals and calculates their expected target attainment and toxicity risks.")
-
-    engine = st.session_state['bayes_engine']
-
-    # 1. Ensure the increment is in memory so we can read it before the widget renders
-    if 'dose_increment' not in st.session_state:
-        st.session_state['dose_increment'] = 25.0
-
-    current_increment = st.session_state['dose_increment']
-
-    # 2. Execution & Smart Caching
-    state_id = f"{current_increment}_{engine.calibrated}"
-    if engine.calibrated and engine.map_params is not None:
-        state_id += f"_{engine.map_params[0]}"
-
-    # Only simulate if the dose increment changed or the model was fitted with new data
-    if st.session_state.get('regimen_state_id') != state_id or 'regimen_grid' not in st.session_state:
-        with st.spinner("Simulating optimal regimens..."):
-            st.session_state['regimen_grid'] = engine.suggest_regimens(dose_step=current_increment)
-            st.session_state['regimen_state_id'] = state_id
-
-    # 3. Render the Grid with Selection Enabled (UN-INDENTED!)
-    grid_results = st.session_state['regimen_grid']
-    if not grid_results:
-        st.warning("No regimens met the minimum threshold for target attainment.")
-    else:
-        styled_df = Visualization.get_regimen_grid(grid_results)
-
-        # Adding a fixed key prevents the grid from unmounting during a rerun!
-        grid_event = st.dataframe(
-            styled_df,
-            width='content',
-            hide_index=False,
-            on_select="rerun",
-            selection_mode="single-row",
-            key="interactive_regimen_grid"
-        )
-
-        # --- Process Row Clicks ---
-        current_selection = grid_event.selection.rows[0] if grid_event.selection.rows else None
-        last_selection = st.session_state.get('last_grid_selection', None)
-
-        # If the user clicked a new row, update the inputs for the predictive section
-        if current_selection != last_selection:
-            st.session_state['last_grid_selection'] = current_selection
-
-            if current_selection is not None:
-                # Extract the interval (e.g., 'q12hr' -> 12.0)
-                interval_str = styled_df.data.index[current_selection]
-                interval_val = float(interval_str.replace('q', '').replace('hr', ''))
-
-                # Extract the dose (e.g., '575 mg' -> 575.0)
-                dose_str = styled_df.data.iloc[current_selection]['Optimal Dose']
-                dose_val = float(dose_str.replace(' mg', ''))
-
-                # Force update the input widgets below
-                st.session_state['eval_dose_input'] = dose_val
-                st.session_state['eval_int_input'] = interval_val
-
-    dose_increment = st.number_input("Dose Increment (mg)", min_value=5.0, max_value=250.0, step=5.0, width=150,
-                                     key='dose_increment')
-    st.info("The optimal dose for each interval is chosen to maximize Probability of Target Attainment (PTA).")
-
-# --- PREDICTIVE REGIMEN EVALUATION ---
-if st.session_state.get('model_initialized', False):
-    st.write("---")
-    st.subheader("Predictive Regimen Evaluation")
-    st.markdown("Test a maintenance dosing regimen to predict steady-state performance and toxicity risks.")
-
-    # 1. Initialize default values in session state if they don't exist yet
-    if 'eval_dose_input' not in st.session_state:
-        default_dose = 750.0
-        if 'regimen_grid' in st.session_state and 'q8hr' in st.session_state['regimen_grid']:
-            opt_dose_str = st.session_state['regimen_grid']['q8hr']['Optimal Dose']
-            default_dose = float(opt_dose_str.replace(' mg', ''))
-
-        st.session_state['eval_dose_input'] = default_dose
-        st.session_state['eval_int_input'] = 8.0
-
-    # 2. UI: Collect Inputs (Bound directly to session state keys!)
-    rc1, rc2, rc3 = st.columns(3)
-
-    # We remove the 'value=' argument because Streamlit manages the value via the 'key'
-    eval_dose = rc1.number_input("Test Dose (mg)", min_value=0.0, step=25.0, key='eval_dose_input')
-    eval_int = rc2.number_input("Test Interval (hrs)", min_value=1.0, step=1.0, key='eval_int_input')
-    eval_tinf = rc3.number_input("Infusion Time (hrs)", min_value=0.5, value=1.0, step=0.25)
-
-    # 2. Execution Block: Calculate automatically on input change
-    engine = st.session_state['bayes_engine']
-
-    with st.spinner("Calculating deterministic steady-state limits..."):
-        # We correctly unpack all THREE returned values from engine.py
-        auc_samples, peak_samples, metrics = engine.evaluate_regimen(eval_dose, eval_int, eval_tinf)
-
-    # 3. UI: Render Metrics and Chart
-    st.write("")
-    mc1, mc2, mc3, mc4 = st.columns(4)
-
-    # We use the metrics dictionary generated by the engine
-    mc1.metric("Subtherapeutic Risk", f"{metrics['p_sub']:.1f}%", "< 400 AUC", delta_color="off")
-    mc2.metric("Target Probability", f"{metrics['p_target']:.1f}%", "400 - 600 AUC", delta_color="normal")
-    mc3.metric("Supratherapeutic Risk", f"{metrics['p_supra']:.1f}%", "> 600 AUC", delta_color="inverse")
-    mc4.metric("Toxic Peak Risk", f"{metrics['p_peak']:.1f}%", "> 50 mg/L", delta_color="inverse")
-
-    st.write("")
-
-    # Render Plotly Histogram and Profile side-by-side or stacked
-    fig_hist = Visualization.get_auc_histogram(auc_samples, engine.target_auc_min, engine.target_auc_max)
-    fig_reg_prof = Visualization.get_predicted_regimen_plot(engine, st.session_state['clinical_data'], eval_dose,
-                                                            eval_int, eval_tinf)
-
-    col_p1, col_p2 = st.columns(2)
-    with col_p1:
-        st.plotly_chart(fig_hist, width='stretch')
-    with col_p2:
-        st.plotly_chart(fig_reg_prof, width='stretch')

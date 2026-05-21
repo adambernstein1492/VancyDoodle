@@ -62,3 +62,36 @@ def Lamarre2000(weight, height, age, creatinine):
     error_config = {"type": "fixed", "sigma": np.log(0.065 ** 2 + 1)}
 
     return priors, cov, iiv, error_config
+
+
+def Le2013(weight, height, age, creatinine):
+    age_days = age * 365.25
+
+    # Population typical values
+    CL = 0.248 * (weight ** 0.75) * ((0.48 / creatinine) ** 0.361) * ((np.log(age_days) / 7.8) ** 0.995)
+    Vc = 0.636 * weight
+    Vp = 0.0  # 1-compartment model
+    Q = 0.0  # 1-compartment model
+
+    priors = np.array([Vc, Vp, CL, Q])
+
+    # Intersubject Variability (CV% converted to Variance)
+    # The study reports an 18% CV for Volume and a 35% CV for Clearance
+    omega_Vc = np.log(0.18 ** 2 + 1)
+    omega_CL = np.log(0.35 ** 2 + 1)
+
+    cov = np.array([
+        [omega_Vc, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, omega_CL, 0.0],
+        [0.0, 0.0, 0.0, 0.0]
+    ])
+
+    # Boolean array indicating which parameters have intersubject variability
+    iiv = [True, False, True, False]
+
+    # Residual Error Model
+    # The study observed a 29% residual variability
+    error_config = {"type": "proportional", "sigma": 0.29}
+
+    return priors, cov, iiv, error_config

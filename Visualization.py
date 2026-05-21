@@ -169,6 +169,7 @@ def get_auc_histogram(auc_samples, target_min=400, target_max=600):
     )
 
     fig.update_layout(
+        title="Predicted Probability Distrubition of the SS AUC24",
         xaxis_title="Predicted Steady-State AUC24 (mg·h/L)",
         yaxis_title="Patient Density",
         showlegend=False,
@@ -382,12 +383,16 @@ def get_predicted_regimen_plot(engine, clinical_data, dose_amt, interval, t_inf)
         })
 
     future_df = pd.DataFrame(future_doses)
-    proj_df = pd.concat([combined_df, future_df], ignore_index=True)
+
+    # Filter out empty dataframes to avoid Pandas concatenation FutureWarnings
+    dfs_to_concat = [df for df in [combined_df, future_df] if not df.empty]
+    proj_df = pd.concat(dfs_to_concat, ignore_index=True) if dfs_to_concat else pd.DataFrame(
+        columns=['Event', 'Time_hr', 'Dose', 'InfusionTime'])
 
     # Generate time grid
     start_time = combined_df['Time_hr'].min() if not combined_df.empty else 0.0
     end_time = last_dose_time + 72.0
-    times = np.linspace(start_time, end_time, 300)
+    times = np.linspace(start_time, end_time, 1500)
 
     # Main Line
     conc = engine._compute_superposition(params, proj_df, times)
@@ -412,7 +417,6 @@ def get_predicted_regimen_plot(engine, clinical_data, dose_amt, interval, t_inf)
     fig = go.Figure()
 
     # Shade Forecasted Area (The projection part: last_dose_time to end_time)
-    # Darkened forecast shading to rgba(200, 200, 200, 0.2)
     fig.add_vrect(x0=last_dose_time, x1=end_time, fillcolor="rgba(200, 200, 200, 0.2)", layer="below", line_width=0)
 
     # Goal Trough band & Peak Line
@@ -421,14 +425,13 @@ def get_predicted_regimen_plot(engine, clinical_data, dose_amt, interval, t_inf)
     fig.add_hline(y=engine.peak, line_dash="dash", line_color="red", layer="below")
 
     # Plot CI
-    # Darkened CI ribbon to rgba(46, 204, 113, 0.3)
     if lower_ci is not None and upper_ci is not None:
         fig.add_trace(
             go.Scatter(x=times, y=upper_ci, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'))
         fig.add_trace(go.Scatter(x=times, y=lower_ci, mode='lines', line=dict(width=0), fill='tonexty',
                                  fillcolor='rgba(46, 204, 113, 0.3)', name='95% Forecast CI'))
 
-    # Concentration Profile - Color updated to match MAP fit ("#2ecc71")
+    # Concentration Profile
     fig.add_trace(go.Scatter(
         x=times, y=conc, mode='lines',
         line=dict(color='#2ecc71', width=3),
