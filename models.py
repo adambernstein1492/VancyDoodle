@@ -65,10 +65,8 @@ def Lamarre2000(weight, height, age, creatinine):
 
 
 def Le2013(weight, height, age, creatinine):
-    age_days = age * 365.25
-
     # Population typical values
-    CL = 0.248 * (weight ** 0.75) * ((0.48 / creatinine) ** 0.361) * ((np.log(age_days) / 7.8) ** 0.995)
+    CL = 0.248 * (weight ** 0.75) * ((0.48 / creatinine) ** 0.361) * ((np.log(age) / 7.8) ** 0.995)
     Vc = 0.636 * weight
     Vp = 0.0  # 1-compartment model
     Q = 0.0  # 1-compartment model

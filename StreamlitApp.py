@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import datetime
 import IOfunctions
 import Visualization
 from engine import VancomycinBayesEngine
@@ -18,8 +19,8 @@ st.divider(width='stretch')
 
 ######################################## INITIALIAZATION ###########################################
 # Initialize Data
-if 'patient_data' not in st.session_state:
-    st.session_state['patient_data'] = patient_data = {'Age': [], 'Weight': [], 'Height': [], 'Creatinine': []}
+if 'patient_demographics' not in st.session_state:
+    st.session_state['patient_demographics'] = {'Age': [], 'Weight': [], 'Height': [], 'Creatinine': []}
     st.session_state['patient_data_updated'] = False
 
 if 'doses' not in st.session_state:
@@ -62,28 +63,49 @@ if 'levels_added' not in st.session_state:
 
 ########################################## INPUT DATA ##############################################
 # Input Patient Data
-st.sidebar.header('Patient Data')
 with st.sidebar.popover('Input Patient Data'):
-    age = st.number_input(label='Age', value=10, key='age')
+    # Add birthdate picker
+    birthdate = st.date_input(label='Birthdate', value=datetime.date(2015, 1, 1))
     weight = st.number_input(label='Weight (kg)', value=30.0, key='weight')
-    height = st.number_input(label='Height (cm)', value=140, key='height')
+    height = st.number_input(label='Height (cm)', value=140.0, key='height')
     creatinine = st.number_input(label='Creatinine', value=0.62, key='creatinine')
+
+    # Add model selector
+    selected_model = st.selectbox(label='Select PK Model', options=['Le2013', 'Smit2021', 'Lamarre2000'])
 
     if st.button(label='Update Patient Info'):
         st.session_state['patient_data_updated'] = True
 
-st.session_state['patient_data'] = {'Age': age, 'Weight': weight, 'Height': height, 'Creatinine': creatinine}
-st.sidebar.table(st.session_state['patient_data'], border='horizontal')
+        # Calculate age in days
+        today = datetime.date.today()
+        age_delta = today - birthdate
+
+        st.session_state['patient_demographics'] = {
+            'AgeDays': age_delta.days,
+            'Weight': weight,
+            'Height': height,
+            'Creatinine': creatinine
+        }
+        st.session_state['selected_model'] = selected_model
+
+demographics_df = pd.DataFrame([st.session_state['patient_demographics']])
+
+st.sidebar.write("### Patient Demographics")
+st.sidebar.dataframe(demographics_df, hide_index=True)
 
 if st.session_state['patient_data_updated']:
-    if st.sidebar.button(label='Initialize the Selected Model',
-                         disabled=(not st.session_state['patient_data_updated'])):
+    if st.sidebar.button(label='Initialize Model'):
+        demographics = st.session_state['patient_demographics']
+        model_name = st.session_state['selected_model']  # Get string separately
+
         st.session_state['bayes_engine'] = VancomycinBayesEngine(
-            st.session_state['patient_data']['Weight'],
-            st.session_state['patient_data']['Height'],
-            st.session_state['patient_data']['Age'],
-            st.session_state['patient_data']['Creatinine']
+            weight_kg=demographics['Weight'],
+            height_cm=demographics['Height'],
+            age_total_days=demographics['AgeDays'],
+            creatinine=demographics['Creatinine'],
+            model=model_name  # Pass separately
         )
+
         st.session_state['model_initialized'] = True
         st.session_state['data_fit'] = False
 
@@ -108,9 +130,15 @@ def lock_single_dose_menu():
 
 col1, col2, col3 = st.sidebar.columns([0.4, 0.1, 0.5], vertical_alignment='center')
 
+weight = st.session_state['patient_demographics'].get('Weight', 30.0)
+if isinstance(weight, list):  # Check if it's the empty list initialized at start
+    weight = 30.0
+
+default_dose = float(20.0 * weight)
+
 with col1:
     with st.popover('Add a dose', width='stretch', disabled=st.session_state['dosing_regimen']):
-        dose = st.number_input(label='Dose (mg)', value=20 * st.session_state['patient_data']['Weight'], key='dose1')
+        dose = st.number_input(label='Dose (mg)', value=default_dose, key='dose1')
         InfusionTime = st.number_input(label='Infusion Time (hr)', value=1.0, key='InfustionTime1')
         date_time = st.datetime_input(label='Date and Time Dose Administered', format='MM/DD/YYYY', step=60)
 
@@ -130,7 +158,7 @@ with col3:
     with st.popover('Specify Dosing Regimen', width='stretch', disabled=st.session_state['specific_doses']):
         col11, col22 = st.columns(2)
         with col11:
-            dose = st.number_input(label='Dose (mg)', value=20 * st.session_state['patient_data']['Weight'],
+            dose = st.number_input(label='Dose (mg)', value=default_dose,
                                    key='dose2')
             InfusionTime = st.number_input(label='Infusion Time (hr)', value=1.0, key='InfusionTime2')
             interval = st.number_input(label='Dosing Interval (hr)', value=8.0)
@@ -333,11 +361,10 @@ if st.session_state.get('model_initialized', False):
     st.write("")
     mc1, mc2, mc3, mc4 = st.columns(4)
 
-    mc1.metric("Subtherapeutic Risk", f"{metrics['p_sub']:.1f}%", "< 400 AUC", delta_color="off")
-    mc2.metric("Target Probability", f"{metrics['p_target']:.1f}%", "400 - 600 AUC", delta_color="normal")
-    mc3.metric("Supratherapeutic Risk", f"{metrics['p_supra']:.1f}%", "> 600 AUC", delta_color="inverse")
-    mc4.metric("Toxic Peak Risk", f"{metrics['p_peak']:.1f}%", "> 50 mg/L", delta_color="inverse")
-
+    mc1.metric("Subtherapeutic Risk", f"{metrics['prob_subtherapeutic']:.1f}%", "< 400 AUC", delta_color="off")
+    mc2.metric("Target Attainment", f"{metrics['prob_target_attainment']:.1f}%", "400 - 600 AUC", delta_color="off")
+    mc3.metric("Supratherapeutic Risk", f"{metrics['prob_supratherapeutic']:.1f}%", "> 600 AUC", delta_color="off")
+    mc4.metric("Peak Risk", f"{metrics['prob_supratherapeutic_peak']:.1f}%", f"> {engine.peak} mg/L", delta_color="off")
     st.write("")
 
     fig_hist = Visualization.get_auc_histogram(auc_samples, engine.target_auc_min, engine.target_auc_max)
