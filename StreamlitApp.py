@@ -336,7 +336,7 @@ if st.session_state.get('model_initialized', False):
 
     # 1. Initialize default values in session state if they don't exist yet
     if 'eval_dose_input' not in st.session_state:
-        default_dose = 750.0
+        default_dose = 500
         if 'regimen_grid' in st.session_state and 'q8hr' in st.session_state['regimen_grid']:
             opt_dose_str = st.session_state['regimen_grid']['q8hr']['Optimal Dose']
             default_dose = float(opt_dose_str.replace(' mg', ''))

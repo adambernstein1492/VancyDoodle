@@ -444,8 +444,8 @@ class VancomycinBayesEngine:
             grid_results[f"q{interval}hr"] = {
                 'Optimal Dose': f"{best['dose']} mg",
                 '% PTA': f"{best['pta']:.1f}%",
-                'AUC > {int(self.target_auc_max)} Risk': f"{best['supra_risk']:.1f}%",
-                'Peak > {int(self.peak)} Risk': f"{best['peak_risk']:.1f}%"
+                'AUC > 600 Risk': f"{best['supra_risk']:.1f}%",
+                'Peak > 50 mg/L Risk': f"{best['peak_risk']:.1f}%"
             }
 
         return grid_results
