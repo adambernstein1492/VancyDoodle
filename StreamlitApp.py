@@ -71,7 +71,7 @@ with st.sidebar.popover('Input Patient Data'):
     creatinine = st.number_input(label='Creatinine', value=0.62, key='creatinine')
 
     # Add model selector
-    selected_model = st.selectbox(label='Select PK Model', options=['Le2013', 'Smit2021', 'Lamarre2000'])
+    selected_model = st.selectbox(label='Select PK Model', options=['Xu2026', 'Le2013', 'Smit2021', 'Lamarre2000'])
 
     if st.button(label='Update Patient Info'):
         st.session_state['patient_data_updated'] = True
