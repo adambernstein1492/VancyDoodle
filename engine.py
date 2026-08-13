@@ -45,6 +45,8 @@ class VancomycinBayesEngine:
         """Standardizes model selection and maps the respective error term definitions."""
         if model_name == 'Smit2021':
             priors, cov, iiv, error_config = models.Smit2021(self.weight, self.height, self.creatinine)
+        elif model_name == 'Xu2026':
+            priors, cov, iiv, error_config = models.Xu2026(self.weight, self.age_total_days, self.creatinine)
         elif model_name == 'Lamarre2000':
             priors, cov, iiv, error_config = models.Lamarre2000(self.weight, self.height, self.age_years, self.creatinine)
         elif model_name == 'Le2013':
