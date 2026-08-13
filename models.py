@@ -28,6 +28,38 @@ def Smit2021(weight, height, creatinine):
 
     return priors, cov, iiv, error_config
 
+def Xu2026(weight, age, creatinine):
+    age_day = 
+    age_year = 
+    Age_Factor = age_day ** 3.4 / (age_day ** 3.4 + 47.7 ** 3.4)
+    StandardizedCreatinine = 2.37330 - 12.91367 * np.log(age_year) + 23.93581 * age_year ** 0.5
+    Fscr = np.exp(-0.649 * (creatinine - StandardizedCreatinine))
+    CrCl = 7.56 * (weight / 70) ** 0.75 * Age_Factor * Fscr
+
+    priors = np.array([
+        85.6 * weight / 70,  # Vc
+        286 * weight / 70,   # Vp
+        CrCl,                # CL
+        1.3 * np.power (weight / 70, 0.75)  # Q
+    ])
+
+    omega_Vc = np.log(32.9 ** 2 + 1)
+    omega_CL = np.log(22.1 ** 2 + 1)
+
+    cov = np.array([
+        [omega_Vc, 0.00, 0.00, 0.00],
+        [0.00, 0.00, 0.00, 0.00],
+        [0.00, 0.00, omega_CL, 0.00],
+        [0.00, 0.00, 0.00, 0.00]
+    ])
+
+    iiv = [True, False, True, False]
+
+    # Error model: Proportional CV
+    error_config = {"type": "proportional", "sigma": 0.232}
+
+    return priors, cov, iiv, error_config
+
 def Lamarre2000(weight, height, age, creatinine):
     # Schwartz CrCl
     if age < 1.0:
