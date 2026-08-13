@@ -106,6 +106,8 @@ if st.session_state['patient_data_updated']:
             model=model_name  # Pass separately
         )
 
+        st.write(st.session_state['bayes_engine'].population_mean)
+
         st.session_state['model_initialized'] = True
         st.session_state['data_fit'] = False
 
