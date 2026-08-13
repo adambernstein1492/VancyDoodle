@@ -34,7 +34,7 @@ def Xu2026(weight, age, creatinine):
     Age_Factor = age_day ** 3.4 / (age_day ** 3.4 + 47.7 ** 3.4)
     creatinine_umL = creatinine * 88.42
     StandardizedCreatinine = 2.37330 - 12.91367 * np.log(age_year) + 23.93581 * age_year ** 0.5
-    Fscr = np.exp(-0.649 * (creatinine - StandardizedCreatinine))
+    Fscr = np.exp(-0.649 * (creatinine_umL - StandardizedCreatinine))
     CrCl = 7.56 * (weight / 70) ** 0.75 * Age_Factor * Fscr
 
     priors = np.array([
