@@ -31,7 +31,6 @@ def Smit2021(weight, height, creatinine):
 def Xu2026(weight, age, creatinine):
     age_day = age
     age_year = age / 365.25
-    print(age)
     Age_Factor = age_day ** 3.4 / (age_day ** 3.4 + 47.7 ** 3.4)
     creatinine_umL = creatinine * 88.42
     StandardizedCreatinine = 2.37330 - 12.91367 * np.log(age_year) + 23.93581 * age_year ** 0.5
@@ -45,8 +44,8 @@ def Xu2026(weight, age, creatinine):
         1.3 * np.power (weight / 70, 0.75)  # Q
     ])
 
-    omega_Vc = np.log(32.9 ** 2 + 1)
-    omega_CL = np.log(22.1 ** 2 + 1)
+    omega_Vc = np.log(0.329 ** 2 + 1)
+    omega_CL = np.log(0.221 ** 2 + 1)
 
     cov = np.array([
         [omega_Vc, 0.00, 0.00, 0.00],
