@@ -293,7 +293,7 @@ if st.session_state.get('patient_data_updated', False):
     )
 
     ec1.download_button(
-        label="Download .txt",
+        label="Download Patient Data",
         data=export_string,
         file_name="patient_profile.txt",
         mime="text/plain",
