@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
-
 import models
 
 
@@ -12,7 +11,7 @@ class VancomycinBayesEngine:
     and Monte Carlo simulations for PTA (Probability of Target Attainment).
     """
 
-    def __init__(self, weight_kg, height_cm, age_total_days, creatinine, model="Le2013",
+    def __init__(self, weight_kg, height_cm, age_total_days, creatinine, model="Smit2021",
                  target_auc_min=400.0, target_auc_max=600.0, trough_min=8.0, trough_max=12.0, peak=50.0):
 
         # Patient Demographics & Targets

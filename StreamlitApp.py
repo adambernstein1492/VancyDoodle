@@ -75,64 +75,66 @@ if 'last_uploaded_file' not in st.session_state:
 ######################################## INITIALIAZATION ###########################################
 
 ########################################## FILE UPLOAD ##############################################
-st.sidebar.header('Batch Import')
+st.sidebar.header('Import From File...')
+
+
 uploaded_file = st.sidebar.file_uploader("Upload Patient Data (.txt)", type=["txt"])
+with st.spinner('Importing data from file...'):
+    if uploaded_file is not None and uploaded_file.name != st.session_state['last_uploaded_file']:
+        try:
+            parsed_data = IOfunctions.parse_patient_file(uploaded_file.getvalue())
 
-if uploaded_file is not None and uploaded_file.name != st.session_state['last_uploaded_file']:
-    try:
-        parsed_data = IOfunctions.parse_patient_file(uploaded_file.getvalue())
+            # 1. Update widget states to auto-populate UI
+            birthdate = datetime.datetime.strptime(parsed_data["birthdate"], "%Y-%m-%d").date()
+            st.session_state['birthdate_input'] = birthdate
+            st.session_state['weight'] = parsed_data['weight']
+            st.session_state['height'] = parsed_data['height']
+            st.session_state['creatinine'] = parsed_data['creatinine']
+            st.session_state['model_input'] = parsed_data['model']
 
-        # 1. Update widget states to auto-populate UI
-        birthdate = datetime.datetime.strptime(parsed_data["birthdate"], "%Y-%m-%d").date()
-        st.session_state['birthdate_input'] = birthdate
-        st.session_state['weight'] = parsed_data['weight']
-        st.session_state['height'] = parsed_data['height']
-        st.session_state['creatinine'] = parsed_data['creatinine']
-        st.session_state['model_input'] = parsed_data['model']
+            # 2. Update backend engine demographics
+            today = datetime.date.today()
+            age_days = (today - birthdate).days
 
-        # 2. Update backend engine demographics
-        today = datetime.date.today()
-        age_days = (today - birthdate).days
+            st.session_state['patient_demographics'] = {
+                'AgeDays': age_days,
+                'Weight': parsed_data['weight'],
+                'Height': parsed_data['height'],
+                'Creatinine': parsed_data['creatinine']
+            }
+            st.session_state['selected_model'] = parsed_data['model']
+            st.session_state['patient_data_updated'] = True
 
-        st.session_state['patient_demographics'] = {
-            'AgeDays': age_days,
-            'Weight': parsed_data['weight'],
-            'Height': parsed_data['height'],
-            'Creatinine': parsed_data['creatinine']
-        }
-        st.session_state['selected_model'] = parsed_data['model']
-        st.session_state['patient_data_updated'] = True
+            # --- AUTO-INITIALIZE THE ENGINE ---
+            st.session_state['bayes_engine'] = VancomycinBayesEngine(
+                weight_kg=parsed_data['weight'],
+                height_cm=parsed_data['height'],
+                age_total_days=age_days,
+                creatinine=parsed_data['creatinine'],
+                model=parsed_data['model']
+            )
+            st.session_state['model_initialized'] = True
+            st.session_state['data_fit'] = False
+            st.session_state['prior_ci'] = (None, None)
+            st.session_state['fit_ci'] = (None, None)
+            # ----------------------------------
 
-        # --- AUTO-INITIALIZE THE ENGINE ---
-        st.session_state['bayes_engine'] = VancomycinBayesEngine(
-            weight_kg=parsed_data['weight'],
-            height_cm=parsed_data['height'],
-            age_total_days=age_days,
-            creatinine=parsed_data['creatinine'],
-            model=parsed_data['model']
-        )
-        st.session_state['model_initialized'] = True
-        st.session_state['data_fit'] = False
-        st.session_state['prior_ci'] = (None, None)
-        st.session_state['fit_ci'] = (None, None)
-        # ----------------------------------
+            # 3. Update the data tables
+            doses_df = pd.DataFrame(parsed_data["doses"]).rename(columns={
+                "datetime": "DateTime", "dose": "Dose", "infusion_time": "InfusionTime"
+            })
+            st.session_state['doses'] = doses_df
 
-        # 3. Update the data tables
-        doses_df = pd.DataFrame(parsed_data["doses"]).rename(columns={
-            "datetime": "DateTime", "dose": "Dose", "infusion_time": "InfusionTime"
-        })
-        st.session_state['doses'] = doses_df
+            levels_df = pd.DataFrame(parsed_data["concentrations"]).rename(columns={
+                "datetime": "DateTime", "conc": "Level"
+            })
+            st.session_state['levels'] = levels_df
 
-        levels_df = pd.DataFrame(parsed_data["concentrations"]).rename(columns={
-            "datetime": "DateTime", "conc": "Level"
-        })
-        st.session_state['levels'] = levels_df
+            st.session_state['last_uploaded_file'] = uploaded_file.name
+            st.rerun()
 
-        st.session_state['last_uploaded_file'] = uploaded_file.name
-        st.rerun()
-
-    except Exception as e:
-        st.sidebar.error(f"Error parsing file. Check formatting. Details: {e}")
+        except Exception as e:
+            st.sidebar.error(f"Error parsing file. Check formatting. Details: {e}")
 st.sidebar.divider(width='stretch')
 ########################################## FILE UPLOAD ##############################################
 

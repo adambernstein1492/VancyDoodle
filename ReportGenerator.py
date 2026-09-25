@@ -12,7 +12,7 @@ class PKReportPDF(FPDF):
             self.image('logo1.png', 10, 8, 30)
 
         self.set_font('Arial', 'B', 15)
-        self.cell(0, 10, 'Van-ke Doodle: Pharmacokinetic Report', 0, 1, 'C')
+        self.cell(0, 10, 'Vanke Doodle: Pharmacokinetic Report', 0, 1, 'C')
         self.set_font('Arial', 'I', 10)
         self.cell(0, 5, 'Not intended for clinical use.', 0, 1, 'C')
         self.ln(10)

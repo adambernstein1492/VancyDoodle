@@ -36,7 +36,6 @@ def parse_patient_file(file_content):
 
         elif current_section == "doses":
             time_str, amt, inf_time = line.split(",")
-            # Requires datetime.datetime.strptime since 'import datetime' is used
             dt = datetime.datetime.strptime(time_str.strip(), "%Y-%m-%d %H:%M")
             data["doses"].append({
                 "datetime": dt,
@@ -46,7 +45,6 @@ def parse_patient_file(file_content):
 
         elif current_section == "levels":
             time_str, val = line.split(",")
-            # Requires datetime.datetime.strptime since 'import datetime' is used
             dt = datetime.datetime.strptime(time_str.strip(), "%Y-%m-%d %H:%M")
             data["concentrations"].append({
                 "datetime": dt,
